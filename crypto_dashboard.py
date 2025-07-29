@@ -25,16 +25,18 @@ SYMBOLS = {
 }
 
 INTERVAL_MAP = {
-    "1分": ("minute", 1440, "%m/%d %H:%M"),
-    "1時間": ("hour", 720, "%m/%d %H:%M"),
+    "1分": ("minute", 1440, "%H:%M"),
+    "1時間": ("hour", 720, "%H:%M"),
     "1日": ("day", 1095, "%m/%d"),
-    "1週間": ("day", 350, "custom_week")  # 週足は日足を使い週単位に集計
+    "1週間": ("day", 350, "custom_week")
 }
 
 # --- データ取得関数（CryptoCompare） ---
-def fetch_ohlc(symbol, interval="minute", limit=60):
+def fetch_ohlc(symbol, interval="minute", to_ts=None, limit=60):
     url = f"https://min-api.cryptocompare.com/data/v2/histo{interval}"
     params = {"fsym": symbol, "tsym": "JPY", "limit": limit, "aggregate": 1}
+    if to_ts:
+        params["toTs"] = int(to_ts.timestamp())
     res = requests.get(url, params=params)
     data = res.json()["Data"]["Data"]
     df = pd.DataFrame(data)
@@ -50,9 +52,21 @@ st.sidebar.header("表示設定")
 selected_symbols = st.sidebar.multiselect("銘柄選択", list(SYMBOLS.keys()), default=["ビットコイン/BTC"], key="capsule")
 interval_label = st.sidebar.selectbox("時間足", list(INTERVAL_MAP.keys()))
 interval_code, max_limit, tick_format = INTERVAL_MAP[interval_label]
-limit = st.sidebar.slider("表示本数（期間）", min_value=30, max_value=max_limit, value=min(100, max_limit))
-show_update = st.sidebar.button("🔄 データ更新")
 
+if interval_label == "1日":
+    start_date = st.sidebar.date_input("開始日", value=datetime.today() - timedelta(days=30))
+    end_date = st.sidebar.date_input("終了日", value=datetime.today())
+    start_ts = datetime.combine(start_date, datetime.min.time())
+    end_ts = datetime.combine(end_date, datetime.min.time())
+    limit = (end_ts - start_ts).days
+else:
+    end_offset = st.sidebar.slider("終了点 (最新からのカウント)", min_value=0, max_value=max_limit - 1, value=0)
+    range_size = st.sidebar.slider("表示本数（期間）", min_value=1, max_value=max_limit - end_offset, value=100)
+    to_ts = datetime.now() - timedelta(**{"minutes": end_offset} if interval_label == "1分" else {"hours": end_offset} if interval_label == "1時間" else {"days": end_offset * 7 if interval_label == "1週間" else end_offset})
+    start_ts = None
+    limit = range_size
+
+show_update = st.sidebar.button("🔄 データ更新")
 if show_update:
     st.experimental_rerun()
 
@@ -64,7 +78,9 @@ with tab1:
     fig = go.Figure()
     for symbol_label in selected_symbols:
         symbol_code = SYMBOLS[symbol_label]
-        df = fetch_ohlc(symbol_code, interval=interval_code, limit=limit)
+        df = fetch_ohlc(symbol_code, interval=interval_code, to_ts=(None if interval_label == "1日" else to_ts), limit=limit)
+        if interval_label == "1日" and not df.empty:
+            df = df[df["time"] >= start_ts]
         if tick_format == "custom_week":
             df["time"] = df["time"].dt.to_period("W-SUN").apply(lambda p: p.start_time.strftime("%m/%d週"))
         fig.add_trace(go.Scatter(x=df["time"], y=df["close"], mode="lines", name=symbol_label))
@@ -76,7 +92,9 @@ with tab2:
     fig = go.Figure()
     for symbol_label in selected_symbols:
         symbol_code = SYMBOLS[symbol_label]
-        df = fetch_ohlc(symbol_code, interval=interval_code, limit=limit)
+        df = fetch_ohlc(symbol_code, interval=interval_code, to_ts=(None if interval_label == "1日" else to_ts), limit=limit)
+        if interval_label == "1日" and not df.empty:
+            df = df[df["time"] >= start_ts]
         if tick_format == "custom_week":
             df["time"] = df["time"].dt.to_period("W-SUN").apply(lambda p: p.start_time.strftime("%m/%d週"))
         fig.add_trace(go.Candlestick(
